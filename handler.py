@@ -78,13 +78,17 @@ def download_video(url: str, dest: str) -> str:
 
 def upload_video(local_path: str) -> str:
     """Upload a video to R2/S3 and return the public URL.
-    Falls back to RunPod's built-in upload if S3 is not configured."""
+    Returns base64-encoded video if S3 is not configured."""
     if not S3_ENDPOINT or not S3_ACCESS_KEY or not S3_SECRET_KEY:
-        # Use runpod's upload utility (returns a presigned URL)
-        return runpod.serverless.modules.rp_upload.upload_file_to_bucket(
-            file_name=os.path.basename(local_path),
-            file_location=local_path,
-        )
+        # No S3 configured — return base64 data URI
+        import base64
+        with open(local_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        # Return size info instead of full base64 for large files
+        file_size = os.path.getsize(local_path)
+        if file_size > 50 * 1024 * 1024:  # >50MB, too large for base64
+            return f"local://{local_path} ({file_size} bytes, S3 not configured)"
+        return f"data:video/mp4;base64,{b64}"
 
     s3 = get_s3_client()
     key = f"upscaled/{uuid4().hex}.mp4"
@@ -201,6 +205,21 @@ def handler(event: dict) -> dict:
     try:
         job_input = event.get("input", {})
 
+        # Diagnostic mode: return system info without running VEnhancer
+        if job_input.get("diagnostic"):
+            import torch
+            return {
+                "status": "ok",
+                "cuda_available": torch.cuda.is_available(),
+                "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "none",
+                "gpu_memory_gb": round(torch.cuda.get_device_properties(0).total_mem / 1e9, 1) if torch.cuda.is_available() else 0,
+                "model_v2_exists": os.path.exists(f"{MODEL_DIR}/venhancer_v2.pt"),
+                "model_v1_exists": os.path.exists(f"{MODEL_DIR}/venhancer_paper.pt"),
+                "model_v2_size_mb": round(os.path.getsize(f"{MODEL_DIR}/venhancer_v2.pt") / 1e6, 1) if os.path.exists(f"{MODEL_DIR}/venhancer_v2.pt") else 0,
+                "s3_configured": bool(S3_ENDPOINT and S3_ACCESS_KEY),
+                "venhancer_files": os.listdir(VENHANCER_REPO)[:20],
+            }
+
         video_url = job_input.get("video_url")
         if not video_url:
             return {"error": "video_url is required"}
@@ -215,6 +234,9 @@ def handler(event: dict) -> dict:
             # Download source video
             input_path = os.path.join(tmpdir, "input.mp4")
             download_video(video_url, input_path)
+
+            # Get input info for diagnostics
+            input_info = get_video_info(input_path)
 
             # Run VEnhancer
             output_path = os.path.join(tmpdir, "output.mp4")
@@ -231,7 +253,7 @@ def handler(event: dict) -> dict:
             # Get output info
             info = get_video_info(output_path)
 
-            # Upload to R2/S3 (or RunPod's built-in storage)
+            # Upload to R2/S3 or return base64
             public_url = upload_video(output_path)
 
         processing_time = time.time() - start_time
