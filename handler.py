@@ -77,7 +77,15 @@ def download_video(url: str, dest: str) -> str:
 
 
 def upload_video(local_path: str) -> str:
-    """Upload a video to R2/S3 and return the public URL."""
+    """Upload a video to R2/S3 and return the public URL.
+    Falls back to RunPod's built-in upload if S3 is not configured."""
+    if not S3_ENDPOINT or not S3_ACCESS_KEY or not S3_SECRET_KEY:
+        # Use runpod's upload utility (returns a presigned URL)
+        return runpod.serverless.modules.rp_upload.upload_file_to_bucket(
+            file_name=os.path.basename(local_path),
+            file_location=local_path,
+        )
+
     s3 = get_s3_client()
     key = f"upscaled/{uuid4().hex}.mp4"
     s3.upload_file(
@@ -189,49 +197,59 @@ def run_venhancer(
 def handler(event: dict) -> dict:
     """RunPod serverless handler for VEnhancer."""
     start_time = time.time()
-    job_input = event.get("input", {})
 
-    video_url = job_input.get("video_url")
-    if not video_url:
-        return {"error": "video_url is required"}
+    try:
+        job_input = event.get("input", {})
 
-    target_resolution = job_input.get("target_resolution", [3840, 2160])
-    version = job_input.get("version", "v2")
-    up_scale = job_input.get("up_scale", 4)
-    fps = job_input.get("fps", 30)
-    steps = job_input.get("steps", 15)
+        video_url = job_input.get("video_url")
+        if not video_url:
+            return {"error": "video_url is required"}
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Download source video
-        input_path = os.path.join(tmpdir, "input.mp4")
-        download_video(video_url, input_path)
+        target_resolution = job_input.get("target_resolution", [3840, 2160])
+        version = job_input.get("version", "v2")
+        up_scale = job_input.get("up_scale", 4)
+        fps = job_input.get("fps", 30)
+        steps = job_input.get("steps", 15)
 
-        # Run VEnhancer
-        output_path = os.path.join(tmpdir, "output.mp4")
-        run_venhancer(
-            input_path=input_path,
-            output_path=output_path,
-            version=version,
-            up_scale=up_scale,
-            target_fps=fps,
-            steps=steps,
-            target_resolution=target_resolution,
-        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Download source video
+            input_path = os.path.join(tmpdir, "input.mp4")
+            download_video(video_url, input_path)
 
-        # Get output info
-        info = get_video_info(output_path)
+            # Run VEnhancer
+            output_path = os.path.join(tmpdir, "output.mp4")
+            run_venhancer(
+                input_path=input_path,
+                output_path=output_path,
+                version=version,
+                up_scale=up_scale,
+                target_fps=fps,
+                steps=steps,
+                target_resolution=target_resolution,
+            )
 
-        # Upload to R2/S3
-        public_url = upload_video(output_path)
+            # Get output info
+            info = get_video_info(output_path)
 
-    processing_time = time.time() - start_time
+            # Upload to R2/S3 (or RunPod's built-in storage)
+            public_url = upload_video(output_path)
 
-    return {
-        "video_url": public_url,
-        "duration_seconds": info["duration"],
-        "resolution": [info["width"], info["height"]],
-        "processing_time_seconds": round(processing_time, 1),
-    }
+        processing_time = time.time() - start_time
+
+        return {
+            "video_url": public_url,
+            "duration_seconds": info["duration"],
+            "resolution": [info["width"], info["height"]],
+            "processing_time_seconds": round(processing_time, 1),
+        }
+
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()[-1000:],
+            "processing_time_seconds": round(time.time() - start_time, 1),
+        }
 
 
 runpod.serverless.start({"handler": handler})
