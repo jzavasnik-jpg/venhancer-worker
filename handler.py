@@ -29,6 +29,7 @@ Output schema:
 """
 
 import os
+import sys
 import time
 import subprocess
 import tempfile
@@ -36,6 +37,9 @@ import requests
 import runpod
 import boto3
 from uuid import uuid4
+
+# Add VEnhancer to Python path so we can import its modules
+sys.path.insert(0, "/workspace/VEnhancer")
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +109,36 @@ def get_video_info(path: str) -> dict:
     return {"duration": duration, "width": width, "height": height}
 
 
+def get_venhancer(version: str = "v2", steps: int = 15):
+    """Get or create the VEnhancer model instance (cached)."""
+    global _venhancer_instance, _venhancer_version
+    if _venhancer_instance is not None and _venhancer_version == version:
+        return _venhancer_instance
+
+    from enhance_a_video import VEnhancer
+
+    # Model files are .pt (not .pth) — downloaded from jwhejwhe/VEnhancer
+    version_map = {"v2": "venhancer_v2.pt", "v1": "venhancer_paper.pt"}
+    model_file = version_map.get(version, "venhancer_v2.pt")
+    model_path = f"{MODEL_DIR}/{model_file}"
+
+    _venhancer_instance = VEnhancer(
+        result_dir="/tmp/venhancer_output",
+        version=version,
+        model_path=model_path,
+        solver_mode="fast",
+        steps=steps,
+        guide_scale=7.5,
+    )
+    _venhancer_version = version
+    return _venhancer_instance
+
+
+# Global model cache
+_venhancer_instance = None
+_venhancer_version = None
+
+
 def run_venhancer(
     input_path: str,
     output_path: str,
@@ -114,33 +148,24 @@ def run_venhancer(
     steps: int = 15,
     target_resolution: list | None = None,
 ) -> str:
-    """Run VEnhancer inference."""
-    model_ckpt = f"{MODEL_DIR}/venhancer_{version}.pth"
+    """Run VEnhancer inference using the Python API."""
+    enhancer = get_venhancer(version=version, steps=steps)
 
-    cmd = [
-        "python", f"{VENHANCER_REPO}/enhance.py",
-        "--input_path", input_path,
-        "--save_dir", os.path.dirname(output_path),
-        "--model_path", model_ckpt,
-        "--up_scale", str(up_scale),
-        "--target_fps", str(target_fps),
-        "--steps", str(steps),
-        "--solver_mode", "fast",
-        "--guide_scale", "7.5",
-    ]
-
-    if target_resolution:
-        cmd.extend(["--target_width", str(target_resolution[0])])
-        cmd.extend(["--target_height", str(target_resolution[1])])
-
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-
-    if result.returncode != 0:
-        raise RuntimeError(f"VEnhancer failed: {result.stderr[-500:]}")
-
-    # VEnhancer outputs to save_dir with a generated filename
-    # Find the output file
+    # VEnhancer.enhance_a_video returns output frames saved to result_dir
     save_dir = os.path.dirname(output_path)
+    enhancer.result_dir = save_dir
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Run enhancement — prompt can be empty for pure upscaling
+    enhancer.enhance_a_video(
+        video_path=input_path,
+        prompt="",
+        up_scale=up_scale,
+        target_fps=target_fps,
+        noise_aug=200,
+    )
+
+    # Find the output file VEnhancer created
     output_files = [
         f for f in os.listdir(save_dir)
         if f.endswith(".mp4") and f != os.path.basename(input_path)

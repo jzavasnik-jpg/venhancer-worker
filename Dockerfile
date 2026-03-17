@@ -20,14 +20,15 @@ RUN pip install --no-cache-dir \
 RUN pip install --no-cache-dir \
     runpod \
     boto3 \
-    requests
+    requests \
+    huggingface_hub
 
-# Download model weights
+# Download model weights from the PUBLIC repo (jwhejwhe/VEnhancer)
+# Note: Vchitect/VEnhancer is gated (401), jwhejwhe/VEnhancer is public
 RUN mkdir -p /models && \
-    wget -q -O /models/venhancer_v2.pth \
-    "https://huggingface.co/Vchitect/VEnhancer/resolve/main/venhancer_v2.pth" && \
-    wget -q -O /models/venhancer_paper.pth \
-    "https://huggingface.co/Vchitect/VEnhancer/resolve/main/venhancer_paper.pth"
+    python -c "from huggingface_hub import hf_hub_download; hf_hub_download('jwhejwhe/VEnhancer', 'venhancer_v2.pt', local_dir='/models')" && \
+    python -c "from huggingface_hub import hf_hub_download; hf_hub_download('jwhejwhe/VEnhancer', 'venhancer_paper.pt', local_dir='/models')" && \
+    ls -lh /models/
 
 # Copy handler
 COPY handler.py /workspace/handler.py
