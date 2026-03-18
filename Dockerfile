@@ -30,6 +30,13 @@ RUN mkdir -p /models && \
     python -c "from huggingface_hub import hf_hub_download; hf_hub_download('jwhejwhe/VEnhancer', 'venhancer_paper.pt', local_dir='/models')" && \
     ls -lh /models/
 
+# Pre-cache the SVD VAE (downloaded at runtime by VideoToVideo.__init__)
+# This avoids a ~3GB download on every cold start
+RUN python -c "from diffusers import AutoencoderKLTemporalDecoder; AutoencoderKLTemporalDecoder.from_pretrained('stabilityai/stable-video-diffusion-img2vid', subfolder='vae', variant='fp16')"
+
+# Pre-cache the OpenCLIP model (downloaded at runtime by FrozenOpenCLIPEmbedder)
+RUN python -c "import open_clip; open_clip.create_model_and_transforms('ViT-H-14', pretrained='laion2b_s32b_b79k')" || true
+
 # Copy handler
 COPY handler.py /workspace/handler.py
 
