@@ -12,7 +12,7 @@ import traceback
 import base64
 
 sys.path.insert(0, "/workspace/VEnhancer")
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512,expandable_segments:True"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 
 import runpod
 import requests as http_requests
